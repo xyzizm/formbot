@@ -1,0 +1,39 @@
+{
+  "bot_token": "123456789:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "admin_chat_id": "123456789",
+
+  "submissions_path": "submissions.csv",
+  "sessions_path": "sessions.json",
+
+  "intro": "Здравствуйте! Заполним заявку — это займёт минуту.",
+  "done": "Спасибо! Заявка принята, мы свяжемся с вами в ближайшее время.",
+  "cancelled": "Отменено. Наберите /start, чтобы начать заново.",
+
+  "questions": [
+    {
+      "key": "name",
+      "text": "Как вас зовут?"
+    },
+    {
+      "key": "phone",
+      "text": "Оставьте телефон для связи",
+      "validator": "phone"
+    },
+    {
+      "key": "email",
+      "text": "Email (или напишите «-», чтобы пропустить)",
+      "validator": "email",
+      "optional": true
+    },
+    {
+      "key": "budget",
+      "text": "Ориентировочный бюджет в рублях?",
+      "validator": "number",
+      "optional": true
+    },
+    {
+      "key": "task",
+      "text": "Опишите задачу в двух словах"
+    }
+  ]
+}

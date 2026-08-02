@@ -1,0 +1,12 @@
+# Never commit these — config.json holds your bot token
+config.json
+state.json
+state.json.tmp
+*.log
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
