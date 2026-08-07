@@ -9,7 +9,7 @@ Built for the most common bot request there is: *"I need a bot that collects app
 ## Quick start
 
 ```bash
-pip install requests
+pip install -r requirements.txt
 cp config.example.json config.json
 ```
 
