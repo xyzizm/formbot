@@ -1,5 +1,7 @@
 # FormBot
 
+[![CI](https://github.com/xyzizm/formbot/actions/workflows/ci.yml/badge.svg)](https://github.com/xyzizm/formbot/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+
 A Telegram bot that asks your questions, checks the answers, and drops every submission into a spreadsheet. You describe the form in JSON — no Python per client.
 
 Built for the most common bot request there is: *"I need a bot that collects applications."*
