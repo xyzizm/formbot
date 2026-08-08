@@ -40,6 +40,9 @@ Submissions land in `submissions.csv`. You also get each one as a Telegram messa
   "questions": [
     { "key": "name",  "text": "Как вас зовут?" },
     { "key": "phone", "text": "Телефон?", "validator": "phone" },
+    { "key": "service", "text": "Какая услуга?", "validator": "choice",
+      "options": ["Ремонт", "Доставка", "Консультация"] },
+    { "key": "when", "text": "На какую дату?", "validator": "date" },
     { "key": "email", "text": "Email?", "validator": "email", "optional": true }
   ]
 }
@@ -49,8 +52,36 @@ Submissions land in `submissions.csv`. You also get each one as a Telegram messa
 |---|---|
 | `key` | column name in the CSV — must be unique |
 | `text` | what the bot asks |
-| `validator` | `any` (default), `phone`, `email`, `number` |
+| `validator` | `any` (default), `phone`, `email`, `number`, `choice`, `date` |
+| `options` | the allowed answers — required by `choice`, rejected elsewhere |
 | `optional` | user may answer `-`, `нет`, `пропустить`, `skip` |
+
+### Choice questions
+
+The options are numbered underneath the question automatically, and the reply
+is accepted either as the label in any casing or as its number — people send
+`2` far more often than they retype the text.
+
+```
+> Какая услуга?
+>
+> 1. Ремонт
+> 2. Доставка
+> 3. Консультация
+< 2
+```
+
+Whatever they send, the CSV records the option exactly as spelled in the
+config, so a column holds one spelling instead of a dozen. A `choice` question
+with fewer than two options, duplicate options, or `options` on a question that
+is not a `choice` fails when the config loads — not silently at runtime with
+every answer rejected.
+
+### Dates
+
+`date` accepts `25.12.2026`, `25/12/2026` and `2026-12-25`, checks the date is
+real (31 February and a leap day in a common year are both refused), and stores
+it as ISO `2026-12-25` so the column sorts correctly in a spreadsheet.
 
 ### Validation
 
@@ -102,12 +133,15 @@ bot.py       wiring                  handle_update is pure; only Bot does I/O
 A new validator:
 
 ```python
-def _v_inn(value):
+def _v_inn(value, question):
     digits = re.sub(r"\D", "", value)
     return (True, "") if len(digits) in (10, 12) else (False, "ИНН — 10 или 12 цифр")
 
 VALIDATORS["inn"] = _v_inn   # usable in config immediately
 ```
+
+The `question` argument is there so a validator can read config declared next
+to it — that is how `choice` reaches its `options`. Most validators ignore it.
 
 `handle_update(update, form, sessions, admin_chat_id) -> [Action]` performs no I/O — it returns *what should happen*. That is why the entire bot is tested with dictionaries and no Telegram token.
 
@@ -121,7 +155,7 @@ Swapping the CSV for a database means one class implementing `add()` and `count(
 python3 tests/test_formbot.py
 ```
 
-83 tests: validators against real-world input, the full conversation flow, command handling, per-user isolation, storage persistence, and the security fixes below.
+128 tests: validators against real-world input, choice matching and date parsing, config validation, the full conversation flow, command handling, per-user isolation, storage persistence, and the security fixes below.
 
 ### Bugs found by probing the first version
 

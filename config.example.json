@@ -26,6 +26,18 @@
       "optional": true
     },
     {
+      "key": "service",
+      "text": "Какая услуга нужна?",
+      "validator": "choice",
+      "options": ["Ремонт", "Доставка", "Консультация"]
+    },
+    {
+      "key": "when",
+      "text": "На какую дату? (например 25.12.2026)",
+      "validator": "date",
+      "optional": true
+    },
+    {
       "key": "budget",
       "text": "Ориентировочный бюджет в рублях?",
       "validator": "number",

@@ -14,30 +14,37 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Callable, Dict, List, Optional, Tuple
 
 # ------------------------------------------------------------------ validators
 # Adding one = one function plus one registry line.
+#
+# Every validator takes (value, question). Most ignore the question, but
+# "choice" needs the options declared alongside it, and passing the whole
+# question keeps a single signature instead of two kinds of validator.
+
+DATE_FORMATS = ("%d.%m.%Y", "%d/%m/%Y", "%Y-%m-%d")
 
 
-def _v_any(value: str) -> Tuple[bool, str]:
+def _v_any(value: str, question: "Question") -> Tuple[bool, str]:
     return (True, "") if value.strip() else (False, "Пустой ответ, попробуйте ещё раз.")
 
 
-def _v_phone(value: str) -> Tuple[bool, str]:
+def _v_phone(value: str, question: "Question") -> Tuple[bool, str]:
     digits = re.sub(r"\D", "", value)
     if 10 <= len(digits) <= 15:
         return True, ""
     return False, "Не похоже на телефон. Пример: +7 999 123-45-67"
 
 
-def _v_email(value: str) -> Tuple[bool, str]:
+def _v_email(value: str, question: "Question") -> Tuple[bool, str]:
     if re.fullmatch(r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}", value.strip()):
         return True, ""
     return False, "Не похоже на email. Пример: name@example.com"
 
 
-def _v_number(value: str) -> Tuple[bool, str]:
+def _v_number(value: str, question: "Question") -> Tuple[bool, str]:
     cleaned = value.replace(" ", "").replace(",", ".")
     try:
         float(cleaned)
@@ -46,12 +53,72 @@ def _v_number(value: str) -> Tuple[bool, str]:
         return False, "Нужно число. Пример: 1500"
 
 
-VALIDATORS: Dict[str, Callable[[str], Tuple[bool, str]]] = {
+def match_choice(value: str, options: Tuple[str, ...]) -> Optional[str]:
+    """
+    Resolve an answer to one of the options, or None.
+
+    Accepts the option text in any casing, and the 1-based number shown in
+    the prompt — people reply "2" far more often than they retype the label.
+    Returns the option as written in the config, so the spreadsheet gets one
+    consistent spelling instead of whatever each person typed.
+    """
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    if cleaned.isdigit():
+        index = int(cleaned)
+        if 1 <= index <= len(options):
+            return options[index - 1]
+        return None
+
+    folded = cleaned.casefold()
+    for option in options:
+        if option.casefold() == folded:
+            return option
+    return None
+
+
+def _v_choice(value: str, question: "Question") -> Tuple[bool, str]:
+    if match_choice(value, question.options) is not None:
+        return True, ""
+    listed = ", ".join(question.options)
+    return False, f"Выберите один из вариантов ({listed}) или пришлите его номер."
+
+
+def parse_date(value: str) -> Optional[date]:
+    """Parse a date in any accepted format. Returns None if it is not one."""
+    import datetime
+
+    cleaned = value.strip()
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _v_date(value: str, question: "Question") -> Tuple[bool, str]:
+    if parse_date(value) is not None:
+        return True, ""
+    return False, "Не похоже на дату. Пример: 25.12.2026"
+
+
+VALIDATORS: Dict[str, Callable[[str, "Question"], Tuple[bool, str]]] = {
     "any": _v_any,
     "phone": _v_phone,
     "email": _v_email,
     "number": _v_number,
+    "choice": _v_choice,
+    "date": _v_date,
 }
+
+# Validators that cannot work without options declared on the question.
+NEEDS_OPTIONS = {"choice"}
+
+
+SKIP_WORDS = {"-", "нет", "пропустить", "skip"}
 
 
 @dataclass
@@ -60,9 +127,28 @@ class Question:
     text: str
     validator: str = "any"
     optional: bool = False
+    options: Tuple[str, ...] = ()
+
+    @property
+    def prompt(self) -> str:
+        """
+        What the user actually sees.
+
+        Choice questions get their options numbered underneath, because an
+        unlisted set of valid answers is a guessing game.
+        """
+        if self.validator != "choice" or not self.options:
+            return self.text
+        listed = "\n".join(
+            f"{index}. {option}" for index, option in enumerate(self.options, 1)
+        )
+        return f"{self.text}\n\n{listed}"
+
+    def is_skip(self, answer: str) -> bool:
+        return self.optional and answer.strip().casefold() in SKIP_WORDS
 
     def validate(self, answer: str) -> Tuple[bool, str]:
-        if self.optional and answer.strip() in {"-", "нет", "пропустить", "skip"}:
+        if self.is_skip(answer):
             return True, ""
         checker = VALIDATORS.get(self.validator)
         if checker is None:
@@ -70,7 +156,25 @@ class Question:
             raise ValueError(
                 f"Unknown validator '{self.validator}'. Available: {known}"
             )
-        return checker(answer)
+        return checker(answer, self)
+
+    def normalize(self, answer: str) -> str:
+        """
+        The form of the answer that gets recorded.
+
+        A choice becomes the option as spelled in the config, and a date
+        becomes ISO, so the spreadsheet holds one spelling per column no
+        matter how each person typed it.
+        """
+        if self.is_skip(answer):
+            return answer.strip()
+        if self.validator == "choice":
+            matched = match_choice(answer, self.options)
+            return matched if matched is not None else answer.strip()
+        if self.validator == "date":
+            parsed = parse_date(answer)
+            return parsed.isoformat() if parsed is not None else answer.strip()
+        return answer.strip()
 
 
 @dataclass
@@ -107,7 +211,7 @@ def start(form: Form) -> Tuple[Session, Reply]:
     first = form.question_at(0)
     if first is None:
         return session, Reply(text=form.done, finished=True, answers={})
-    return session, Reply(text=f"{form.intro}\n\n{first.text}")
+    return session, Reply(text=f"{form.intro}\n\n{first.prompt}")
 
 
 def advance(form: Form, session: Session, answer: str) -> Tuple[Session, Reply]:
@@ -126,16 +230,16 @@ def advance(form: Form, session: Session, answer: str) -> Tuple[Session, Reply]:
 
     ok, hint = question.validate(answer)
     if not ok:
-        return session, Reply(text=f"{hint}\n\n{question.text}")
+        return session, Reply(text=f"{hint}\n\n{question.prompt}")
 
-    session.answers[question.key] = answer.strip()
+    session.answers[question.key] = question.normalize(answer)
     session.index += 1
 
     next_question = form.question_at(session.index)
     if next_question is None:
         return session, Reply(text=form.done, finished=True,
                               answers=dict(session.answers))
-    return session, Reply(text=next_question.text)
+    return session, Reply(text=next_question.prompt)
 
 
 def build_form(config: dict) -> Form:
@@ -167,12 +271,37 @@ def build_form(config: dict) -> Form:
                 f"{where}: unknown validator '{validator}'. Available: {known}"
             )
 
+        raw_options = item.get("options", [])
+        if not isinstance(raw_options, list):
+            raise ValueError(f"{where}: 'options' must be a list")
+        options = tuple(str(option).strip() for option in raw_options)
+
+        if validator in NEEDS_OPTIONS:
+            # Without this the bot would start and then reject every answer,
+            # which reads like a broken bot rather than a broken config.
+            if len(options) < 2:
+                raise ValueError(
+                    f"{where}: validator '{validator}' needs at least two 'options'"
+                )
+            if any(not option for option in options):
+                raise ValueError(f"{where}: 'options' must not contain empty values")
+            folded = [option.casefold() for option in options]
+            if len(set(folded)) != len(folded):
+                # Duplicates would make one option unreachable by name.
+                raise ValueError(f"{where}: 'options' must be unique")
+        elif options:
+            raise ValueError(
+                f"{where}: 'options' only applies to validator "
+                f"'{', '.join(sorted(NEEDS_OPTIONS))}'"
+            )
+
         questions.append(
             Question(
                 key=key,
                 text=item["text"],
                 validator=validator,
                 optional=bool(item.get("optional", False)),
+                options=options,
             )
         )
 

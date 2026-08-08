@@ -18,9 +18,13 @@ from formbot.forms import (
     Form,
     Question,
     Session,
+    _v_choice,
+    _v_date,
     _v_email,
     _v_number,
     _v_phone,
+    match_choice,
+    parse_date,
     advance,
     build_form,
     escape_html,
@@ -28,6 +32,9 @@ from formbot.forms import (
     start,
 )
 from formbot.storage import CsvSubmissionStore, SessionStore
+
+# Validators receive the question they belong to; the simple ones ignore it.
+ANY_Q = Question(key="probe", text="probe")
 
 FAILURES = []
 
@@ -67,23 +74,163 @@ def update(text, chat_id=1, user_id=99, username="tester"):
 
 def test_phone_validator():
     for good in ["+7 999 123-45-67", "89991234567", "+1 (555) 010-9999"]:
-        check(f"phone: accepts {good}", _v_phone(good)[0])
+        check(f"phone: accepts {good}", _v_phone(good, ANY_Q)[0])
     for bad in ["не скажу", "123", ""]:
-        check(f"phone: rejects {bad!r}", not _v_phone(bad)[0])
+        check(f"phone: rejects {bad!r}", not _v_phone(bad, ANY_Q)[0])
 
 
 def test_email_validator():
     for good in ["a@b.co", "name.surname@example.com"]:
-        check(f"email: accepts {good}", _v_email(good)[0])
+        check(f"email: accepts {good}", _v_email(good, ANY_Q)[0])
     for bad in ["a@b", "no-at-sign.com", "a b@c.com", ""]:
-        check(f"email: rejects {bad!r}", not _v_email(bad)[0])
+        check(f"email: rejects {bad!r}", not _v_email(bad, ANY_Q)[0])
 
 
 def test_number_validator():
-    check("number: accepts int", _v_number("1500")[0])
-    check("number: accepts decimal comma", _v_number("1,5")[0])
-    check("number: accepts spaced", _v_number("1 500")[0])
-    check("number: rejects words", not _v_number("много")[0])
+    check("number: accepts int", _v_number("1500", ANY_Q)[0])
+    check("number: accepts decimal comma", _v_number("1,5", ANY_Q)[0])
+    check("number: accepts spaced", _v_number("1 500", ANY_Q)[0])
+    check("number: rejects words", not _v_number("много", ANY_Q)[0])
+
+
+def choice_question(**kwargs):
+    return Question(
+        key="service", text="Какая услуга?", validator="choice",
+        options=("Ремонт", "Доставка", "Консультация"), **kwargs)
+
+
+def test_choice_validator():
+    q = choice_question()
+
+    check("choice: accepts exact option", _v_choice("Доставка", q)[0])
+    check("choice: accepts different casing", _v_choice("дОсТаВкА", q)[0])
+    check("choice: accepts surrounding whitespace", _v_choice("  Ремонт  ", q)[0])
+    check("choice: accepts the option number", _v_choice("2", q)[0])
+    check("choice: rejects a number out of range", not _v_choice("4", q)[0])
+    check("choice: rejects zero", not _v_choice("0", q)[0])
+    check("choice: rejects an unlisted answer", not _v_choice("что-нибудь", q)[0])
+    check("choice: rejects empty", not _v_choice("", q)[0])
+    check("choice: hint lists the options",
+          "Ремонт" in _v_choice("нет", q)[1], _v_choice("нет", q)[1])
+
+
+def test_choice_normalizes_to_the_configured_spelling():
+    q = choice_question()
+    check("choice: casing normalized to config", q.normalize("дОсТаВкА") == "Доставка")
+    check("choice: number normalized to the option", q.normalize("3") == "Консультация")
+    check("choice: whitespace stripped", q.normalize(" Ремонт ") == "Ремонт")
+
+
+def test_choice_prompt_lists_numbered_options():
+    prompt = choice_question().prompt
+    check("choice: prompt keeps the question text", "Какая услуга?" in prompt, prompt)
+    check("choice: prompt numbers every option",
+          "1. Ремонт" in prompt and "2. Доставка" in prompt
+          and "3. Консультация" in prompt, prompt)
+
+
+def test_non_choice_prompt_is_unchanged():
+    q = Question(key="name", text="Как вас зовут?")
+    check("prompt: plain question is left alone", q.prompt == "Как вас зовут?")
+
+
+def test_optional_choice_can_be_skipped():
+    q = choice_question(optional=True)
+    check("choice: optional question accepts a skip", q.validate("-")[0])
+    check("choice: skip is recorded verbatim", q.normalize("-") == "-")
+
+
+def test_match_choice_directly():
+    options = ("Да", "Нет")
+    check("match: returns the canonical option", match_choice("да", options) == "Да")
+    check("match: resolves by index", match_choice("2", options) == "Нет")
+    check("match: returns None when unmatched", match_choice("может", options) is None)
+
+
+def test_date_validator():
+    q = Question(key="when", text="Когда?", validator="date")
+
+    for good in ["25.12.2026", "25/12/2026", "2026-12-25"]:
+        check(f"date: accepts {good}", _v_date(good, q)[0])
+    for bad in ["завтра", "32.12.2026", "30.02.2026", "12-25", ""]:
+        check(f"date: rejects {bad!r}", not _v_date(bad, q)[0])
+
+
+def test_date_normalizes_to_iso():
+    q = Question(key="when", text="Когда?", validator="date")
+    check("date: dotted form becomes ISO", q.normalize("25.12.2026") == "2026-12-25")
+    check("date: slashed form becomes ISO", q.normalize("25/12/2026") == "2026-12-25")
+    check("date: ISO stays ISO", q.normalize("2026-12-25") == "2026-12-25")
+
+
+def test_parse_date_rejects_impossible_calendar_dates():
+    check("date: rejects 31 February", parse_date("31.02.2026") is None)
+    check("date: accepts a leap day", parse_date("29.02.2024") is not None)
+    check("date: rejects a leap day in a common year", parse_date("29.02.2026") is None)
+
+
+def test_build_form_validates_choice_options():
+    def expect_error(name, question, fragment):
+        try:
+            build_form({"questions": [question]})
+            check(name, False, "no ValueError raised")
+        except ValueError as exc:
+            check(name, fragment in str(exc), str(exc))
+
+    expect_error(
+        "config: choice without options is rejected",
+        {"key": "s", "text": "?", "validator": "choice"}, "at least two")
+    expect_error(
+        "config: choice with one option is rejected",
+        {"key": "s", "text": "?", "validator": "choice", "options": ["Да"]},
+        "at least two")
+    expect_error(
+        "config: duplicate options are rejected",
+        {"key": "s", "text": "?", "validator": "choice",
+         "options": ["Да", "да"]}, "unique")
+    expect_error(
+        "config: empty option text is rejected",
+        {"key": "s", "text": "?", "validator": "choice",
+         "options": ["Да", "  "]}, "empty")
+    expect_error(
+        "config: options on a non-choice question are rejected",
+        {"key": "s", "text": "?", "validator": "phone",
+         "options": ["Да", "Нет"]}, "only applies")
+    expect_error(
+        "config: non-list options are rejected",
+        {"key": "s", "text": "?", "validator": "choice", "options": "Да,Нет"},
+        "must be a list")
+
+
+def test_build_form_accepts_a_valid_choice():
+    form = build_form({"questions": [
+        {"key": "s", "text": "?", "validator": "choice",
+         "options": ["Да", "Нет"]}]})
+    check("config: valid choice builds", form.questions[0].options == ("Да", "Нет"),
+          form.questions[0].options)
+
+
+def test_choice_flows_end_to_end():
+    form = build_form({"questions": [
+        {"key": "service", "text": "Какая услуга?", "validator": "choice",
+         "options": ["Ремонт", "Доставка"]},
+        {"key": "when", "text": "Когда?", "validator": "date"},
+    ]})
+    session, reply = start(form)
+    check("flow: options shown on the first prompt", "1. Ремонт" in reply.text,
+          reply.text)
+
+    session, bad = advance(form, session, "не знаю")
+    check("flow: invalid choice re-asks with the options",
+          "1. Ремонт" in bad.text and not bad.finished, bad.text)
+
+    session, ok = advance(form, session, "2")
+    check("flow: numeric choice advances", "Когда?" in ok.text, ok.text)
+
+    session, done = advance(form, session, "25.12.2026")
+    check("flow: choice and date land normalized",
+          done.answers == {"service": "Доставка", "when": "2026-12-25"},
+          done.answers)
 
 
 # ---------------------------------------------------------------- flow
@@ -397,6 +544,18 @@ if __name__ == "__main__":
         test_phone_validator,
         test_email_validator,
         test_number_validator,
+        test_choice_validator,
+        test_choice_normalizes_to_the_configured_spelling,
+        test_choice_prompt_lists_numbered_options,
+        test_non_choice_prompt_is_unchanged,
+        test_optional_choice_can_be_skipped,
+        test_match_choice_directly,
+        test_date_validator,
+        test_date_normalizes_to_iso,
+        test_parse_date_rejects_impossible_calendar_dates,
+        test_build_form_validates_choice_options,
+        test_build_form_accepts_a_valid_choice,
+        test_choice_flows_end_to_end,
         test_start_asks_first_question,
         test_full_happy_path,
         test_invalid_answer_repeats_question,
