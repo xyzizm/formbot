@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .api import TelegramAPI
 from .forms import Form, advance, build_form, format_submission, start
-from .storage import CsvSubmissionStore, SessionStore
+from .storage import CsvSubmissionStore, SessionStore, UpdateOffsetStore
 
 
 @dataclass
@@ -155,6 +155,7 @@ class Bot:
         self.admin_chat_id = config.get("admin_chat_id")
 
         self.sessions = SessionStore(config.get("sessions_path", "sessions.json"))
+        self.offset = UpdateOffsetStore(config.get("offset_path", "offset.json"))
         self.submissions = CsvSubmissionStore(
             config.get("submissions_path", "submissions.csv"),
             [question.key for question in self.form.questions],
@@ -185,22 +186,21 @@ class Bot:
             {"command": "help", "description": "справка"},
         ])
 
-        offset = 0
         while True:
             try:
-                updates = self.api.get_updates(offset, self.long_poll)
+                updates = self.api.get_updates(self.offset.value, self.long_poll)
                 for update in updates:
-                    offset = update["update_id"] + 1
                     try:
                         for action in handle_update(
                             update, self.form, self.sessions, self.admin_chat_id
                         ):
                             self.perform(action)
+                        self.sessions.save()
+                        self.offset.advance(int(update["update_id"]) + 1)
                     except Exception as exc:
                         # One malformed update must not kill the bot.
                         print(f"! update {update.get('update_id')} failed: "
                               f"{type(exc).__name__}: {exc}")
-                self.sessions.save()
             except KeyboardInterrupt:
                 print("\nStopped.")
                 self.sessions.save()

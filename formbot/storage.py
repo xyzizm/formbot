@@ -21,6 +21,19 @@ from typing import Dict, List, Optional, Protocol
 from .forms import Session
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _spreadsheet_safe(value):
+    """Keep user-controlled text from becoming a spreadsheet formula."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip()
+    if value.startswith(("\t", "\r", "\n")) or stripped.startswith(_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 class SubmissionStore(Protocol):
     def add(self, answers: Dict[str, str], meta: Dict[str, str]) -> None: ...
     def count(self) -> int: ...
@@ -48,7 +61,7 @@ class CsvSubmissionStore:
             os.makedirs(directory, exist_ok=True)
         # utf-8-sig so Excel shows Cyrillic instead of mojibake.
         with open(self.path, "w", newline="", encoding="utf-8-sig") as fh:
-            csv.writer(fh).writerow(self.columns)
+            csv.writer(fh).writerow(_spreadsheet_safe(c) for c in self.columns)
 
     def add(self, answers: Dict[str, str], meta: Dict[str, str]) -> None:
         row = {
@@ -59,7 +72,7 @@ class CsvSubmissionStore:
         row.update(answers)
         with open(self.path, "a", newline="", encoding="utf-8-sig") as fh:
             csv.writer(fh).writerow(
-                [row.get(column, "") for column in self.columns]
+                [_spreadsheet_safe(row.get(column, "")) for column in self.columns]
             )
 
     def count(self) -> int:
@@ -67,6 +80,33 @@ class CsvSubmissionStore:
             return 0
         with open(self.path, "r", encoding="utf-8-sig") as fh:
             return max(sum(1 for _ in fh) - 1, 0)  # minus the header
+
+
+class UpdateOffsetStore:
+    """Durable Telegram polling cursor, advanced only after local processing."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.value = 0
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    self.value = max(int(json.load(fh).get("offset", 0)), 0)
+            except (json.JSONDecodeError, OSError, AttributeError, TypeError, ValueError):
+                print(f"! offset file unreadable ({path}), starting from zero")
+
+    def advance(self, value: int) -> None:
+        value = int(value)
+        if value <= self.value:
+            return
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp = self.path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"offset": value}, fh)
+        os.replace(tmp, self.path)
+        self.value = value
 
 
 class SessionStore:

@@ -194,6 +194,10 @@ WantedBy=multi-user.target
 ## Behaviour notes
 
 - **Sessions survive a restart.** Someone halfway through the form is not stranded.
+- **Processed Telegram updates survive a restart.** The polling cursor is saved
+  atomically in `offset.json` after local processing completes.
+- **Spreadsheet formulas are neutralized.** User-controlled values beginning
+  with formula characters are stored as text in the CSV.
 - **Each user is independent.** Two people filling the form at once never see each other's state.
 - **Non-text messages are ignored** — stickers, photos and joins do not derail a form.
 - **One malformed update cannot kill the bot.** It is logged and polling continues.
