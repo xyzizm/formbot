@@ -13,6 +13,7 @@ one class, not a refactor.
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 from datetime import datetime, timezone
@@ -80,6 +81,34 @@ class CsvSubmissionStore:
             return 0
         with open(self.path, "r", encoding="utf-8-sig") as fh:
             return max(sum(1 for _ in fh) - 1, 0)  # minus the header
+
+    def snapshot_with(self, submissions) -> str:
+        """Prepare a complete CSV replacement for recoverable update commits."""
+        with open(self.path, encoding="utf-8-sig", newline="") as fh:
+            content = fh.read()
+        output = io.StringIO(newline="")
+        output.write(content)
+        if content and not content.endswith(("\n", "\r")):
+            output.write("\r\n")
+        writer = csv.writer(output)
+        for payload in submissions:
+            meta = payload.get("meta", {})
+            row = {"timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                   "user_id": meta.get("user_id", ""), "username": meta.get("username", "")}
+            row.update(payload.get("answers", {}))
+            writer.writerow([_spreadsheet_safe(row.get(c, "")) for c in self.columns])
+        return output.getvalue()
+
+
+def atomic_text(path: str, content: str, encoding="utf-8") -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    with open(path + ".tmp", "w", encoding=encoding, newline="") as fh:
+        fh.write(content)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(path + ".tmp", path)
 
 
 class UpdateOffsetStore:
