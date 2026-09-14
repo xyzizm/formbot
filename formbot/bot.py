@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import os
 import time
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from .api import TelegramAPI
 from .forms import Form, advance, build_form, format_submission, start
-from .storage import CsvSubmissionStore, SessionStore
+from .storage import CsvSubmissionStore, SessionStore, UpdateOffsetStore, atomic_text
 
 
 @dataclass
@@ -155,11 +156,56 @@ class Bot:
         self.admin_chat_id = config.get("admin_chat_id")
 
         self.sessions = SessionStore(config.get("sessions_path", "sessions.json"))
+        self.offset = UpdateOffsetStore(config.get("offset_path", "offset.json"))
         self.submissions = CsvSubmissionStore(
             config.get("submissions_path", "submissions.csv"),
             [question.key for question in self.form.questions],
         )
         self.long_poll = int(config.get("long_poll_seconds", 25))
+        self.journal_path = self.offset.path + ".pending"
+        self.recover()
+
+    def recover(self) -> None:
+        """Finish an interrupted local commit before accepting more updates."""
+        if not os.path.exists(self.journal_path):
+            return
+        with open(self.journal_path, encoding="utf-8") as fh:
+            pending = json.load(fh)
+        if pending["csv"] is not None:
+            atomic_text(self.submissions.path, pending["csv"], "utf-8-sig")
+        atomic_text(self.sessions.path, json.dumps(pending["sessions"], ensure_ascii=False))
+        atomic_text(self.offset.path, json.dumps({"offset": pending["offset"]}))
+        self.sessions = SessionStore(self.sessions.path)
+        self.offset = UpdateOffsetStore(self.offset.path)
+        os.unlink(self.journal_path)
+
+    def process_update(self, update: dict) -> None:
+        self.recover()
+        update_id = update["update_id"]
+        if type(update_id) is not int:
+            raise ValueError("update_id must be an integer")
+        if update_id < self.offset.value:
+            return
+        before = deepcopy(self.sessions._sessions)
+        try:
+            actions = handle_update(update, self.form, self.sessions, self.admin_chat_id)
+            submissions = [a.payload for a in actions if a.kind == "save"]
+            pending = {
+                "offset": update_id + 1,
+                "sessions": {key: {"index": s.index, "answers": s.answers}
+                             for key, s in self.sessions._sessions.items()},
+                "csv": self.submissions.snapshot_with(submissions) if submissions else None,
+            }
+            atomic_text(self.journal_path, json.dumps(pending, ensure_ascii=False))
+            self.recover()
+        except BaseException:
+            self.sessions._sessions = before
+            raise
+        # Telegram has no idempotency key: these are best-effort notifications
+        # after the local commit, never a reason to save a submission twice.
+        for action in actions:
+            if action.kind != "save":
+                self.perform(action)
 
     def perform(self, action: Action) -> None:
         if action.kind == "reply" or action.kind == "notify_admin":
@@ -185,25 +231,21 @@ class Bot:
             {"command": "help", "description": "справка"},
         ])
 
-        offset = 0
         while True:
             try:
-                updates = self.api.get_updates(offset, self.long_poll)
+                updates = self.api.get_updates(self.offset.value, self.long_poll)
                 for update in updates:
-                    offset = update["update_id"] + 1
                     try:
-                        for action in handle_update(
-                            update, self.form, self.sessions, self.admin_chat_id
-                        ):
-                            self.perform(action)
+                        self.process_update(update)
                     except Exception as exc:
                         # One malformed update must not kill the bot.
                         print(f"! update {update.get('update_id')} failed: "
                               f"{type(exc).__name__}: {exc}")
-                self.sessions.save()
+                        # Never acknowledge later updates past a failed save.
+                        time.sleep(5)
+                        break
             except KeyboardInterrupt:
                 print("\nStopped.")
-                self.sessions.save()
                 return
             except Exception as exc:
                 print(f"! poll error: {exc}")

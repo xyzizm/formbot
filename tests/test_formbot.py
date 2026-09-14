@@ -7,6 +7,7 @@ No Telegram token needed — updates are plain dictionaries and the
 conversation engine is pure.
 """
 
+import csv
 import os
 import sys
 import tempfile
@@ -31,7 +32,7 @@ from formbot.forms import (
     format_submission,
     start,
 )
-from formbot.storage import CsvSubmissionStore, SessionStore
+from formbot.storage import CsvSubmissionStore, SessionStore, UpdateOffsetStore
 
 # Validators receive the question they belong to; the simple ones ignore it.
 ANY_Q = Question(key="probe", text="probe")
@@ -457,6 +458,30 @@ def test_csv_submission_store():
         check("store: BOM for Excel", open(path, "rb").read(3) == b"\xef\xbb\xbf")
 
 
+def test_csv_submission_store_neutralizes_formulas():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "subs.csv")
+        store = CsvSubmissionStore(path, ["answer"])
+        store.add({"answer": "  =HYPERLINK(\"https://bad.test\")"}, {})
+        with open(path, newline="", encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+        check("store: formula-like answers are prefixed",
+              rows[0]["answer"].startswith("'  =HYPERLINK"), rows)
+
+
+def test_update_offset_store_persistence():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "offset.json")
+        store = UpdateOffsetStore(path)
+        check("offset: starts at zero", store.value == 0, store.value)
+        store.advance(42)
+
+        reopened = UpdateOffsetStore(path)
+        check("offset: survives restart", reopened.value == 42, reopened.value)
+        reopened.advance(10)
+        check("offset: never moves backward", reopened.value == 42, reopened.value)
+
+
 def test_csv_store_appends_across_restarts():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "subs.csv")
@@ -574,6 +599,8 @@ if __name__ == "__main__":
         test_no_admin_means_no_admin_action,
         test_two_users_do_not_share_state,
         test_csv_submission_store,
+        test_csv_submission_store_neutralizes_formulas,
+        test_update_offset_store_persistence,
         test_csv_store_appends_across_restarts,
         test_session_store_persistence,
         test_session_store_handles_corrupt_file,

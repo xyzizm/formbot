@@ -194,6 +194,16 @@ WantedBy=multi-user.target
 ## Behaviour notes
 
 - **Sessions survive a restart.** Someone halfway through the form is not stranded.
+- **Processed Telegram updates survive a restart.** The polling cursor is saved
+  atomically in `offset.json` after local processing completes.
+  An `offset.json.pending` journal replays an interrupted CSV/session/cursor
+  commit before processing more updates. Keep these files together and run one
+  bot process per set of files. A completed submission rewrites the CSV
+  atomically, so this storage is intended for small forms; do not edit the CSV
+  while the bot is running. Telegram replies and admin messages are best-effort
+  after the local commit and can be missed if the process stops at that point.
+- **Spreadsheet formulas are neutralized.** User-controlled values beginning
+  with formula characters are stored as text in the CSV.
 - **Each user is independent.** Two people filling the form at once never see each other's state.
 - **Non-text messages are ignored** — stickers, photos and joins do not derail a form.
 - **One malformed update cannot kill the bot.** It is logged and polling continues.

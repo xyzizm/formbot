@@ -4,6 +4,7 @@
 
   "submissions_path": "submissions.csv",
   "sessions_path": "sessions.json",
+  "offset_path": "offset.json",
 
   "intro": "Здравствуйте! Заполним заявку — это займёт минуту.",
   "done": "Спасибо! Заявка принята, мы свяжемся с вами в ближайшее время.",
